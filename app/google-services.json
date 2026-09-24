@@ -1,0 +1,68 @@
+{
+  "project_info": {
+    "project_number": "498796483979",
+    "project_id": "com-automotive-automotiv-7bfc5",
+    "storage_bucket": "com-automotive-automotiv-7bfc5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:498796483979:android:4a807003d7303cb7c00b8e",
+        "android_client_info": {
+          "package_name": "com.automotive.automotive"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "498796483979-airtmshs2tacv72006b9hv0mhdeic3ef.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyARvxAwt1vW2iUr1IZQcAlaNlSkOZQW7IA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "498796483979-airtmshs2tacv72006b9hv0mhdeic3ef.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:498796483979:android:62393ea48e8f5806c00b8e",
+        "android_client_info": {
+          "package_name": "com.automotive.salesfinance"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "498796483979-airtmshs2tacv72006b9hv0mhdeic3ef.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyARvxAwt1vW2iUr1IZQcAlaNlSkOZQW7IA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "498796483979-airtmshs2tacv72006b9hv0mhdeic3ef.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

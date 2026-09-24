@@ -1,0 +1,4 @@
+<resources>
+
+    <style name="Theme.AutomotiveSalesAndFinance" parent="Theme.MaterialComponents.Light" />
+</resources>

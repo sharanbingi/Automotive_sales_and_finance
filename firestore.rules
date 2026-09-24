@@ -1,0 +1,494 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for Authentication, Multi-Tenancy & RBAC
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getUserDealership() {
+      return getUserData().dealershipId;
+    }
+
+    function getUserRole() {
+      return getUserData().role;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && getUserRole() == 'SUPER_ADMIN';
+    }
+
+    function isDealershipAdmin(dealershipId) {
+      return isAuthenticated() &&
+             getUserRole() == 'DEALERSHIP_ADMIN' &&
+             dealershipId != null &&
+             dealershipId != '' &&
+             getUserDealership() == dealershipId;
+    }
+
+    function isTenantUser(dealershipId) {
+      return isAuthenticated() &&
+             dealershipId != null &&
+             dealershipId != '' &&
+             getUserDealership() == dealershipId;
+    }
+
+    function isStaff(dealershipId) {
+      return isTenantUser(dealershipId) &&
+             getUserRole() in ['DEALERSHIP_ADMIN', 'STATE_MANAGER', 'STORE_MANAGER', 'SALES_USER', 'FINANCE_USER'];
+    }
+
+    function isAuthorizedCashCollector(dealershipId) {
+      return isTenantUser(dealershipId) && getUserData().role in ['DEALERSHIP_ADMIN', 'STORE_MANAGER', 'FINANCE_USER'];
+    }
+
+    // Expense access helper: authenticates user, verifies dealership tenant match, active status, and store scope
+    function isExpenseStoreAuthorized(dealershipId, storeId) {
+      let user = getUserData();
+      return isAuthenticated() &&
+             user.active == true &&
+             getUserDealership() == dealershipId &&
+             (user.storeId == storeId || user.storeId == 'ALL' || isDealershipAdmin(dealershipId));
+    }
+
+    // Helper for checking field immutability on update
+    function isFieldUnchanged(fieldName) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([fieldName]) ||
+             request.resource.data[fieldName] == resource.data[fieldName];
+    }
+
+    function areFinancialFieldsProtected() {
+      return isFieldUnchanged('subscriptionStatus') &&
+             isFieldUnchanged('paymentStatus') &&
+             isFieldUnchanged('remainingBalance') &&
+             isFieldUnchanged('remainingBalancePaise') &&
+             isFieldUnchanged('paidAmount') &&
+             isFieldUnchanged('paidAmountPaise') &&
+             isFieldUnchanged('emiAmount') &&
+             isFieldUnchanged('emiAmountPaise') &&
+             isFieldUnchanged('loanStatus');
+    }
+
+    function isCashPaymentLoanUpdate(dealershipId, loanId) {
+      let isOnlyModifyingAllowedFields = request.resource.data.diff(resource.data).affectedKeys().hasOnly(['remainingBalancePaise', 'remainingBalance', 'paidAmountPaise', 'paidAmount', 'loanStatus', 'nextEmiDate', 'lastPaymentTransactionId']);
+
+      let immutableIdsPreserved = request.resource.data.dealershipId == resource.data.dealershipId &&
+                                  request.resource.data.customerId == resource.data.customerId &&
+                                  request.resource.data.loanId == resource.data.loanId;
+
+      let hasPaiseFields = resource.data.remainingBalancePaise is int &&
+                           resource.data.paidAmountPaise is int &&
+                           request.resource.data.remainingBalancePaise is int &&
+                           request.resource.data.paidAmountPaise is int;
+
+      let txnId = request.resource.data.get('lastPaymentTransactionId', '');
+      let txnPath = /databases/$(database)/documents/dealerships/$(dealershipId)/transactions/$(txnId);
+      let txn = getAfter(txnPath).data;
+
+      let isTxnValid = txnId != '' &&
+                       txn != null &&
+                       !exists(txnPath) &&
+                       txnId != resource.data.get('lastPaymentTransactionId', '') &&
+                       txn.dealershipId == dealershipId &&
+                       txn.loanId == loanId &&
+                       txn.customerId == resource.data.customerId &&
+                       txn.paymentMethod == 'CASH' &&
+                       txn.status == 'SUCCESS' &&
+                       txn.collectedByUserId == request.auth.uid &&
+                       txn.amountPaise is int &&
+                       txn.amountPaise > 0;
+
+      let exactMath = (resource.data.remainingBalancePaise - request.resource.data.remainingBalancePaise == txn.amountPaise) &&
+                      (request.resource.data.paidAmountPaise - resource.data.paidAmountPaise == txn.amountPaise);
+
+      let isValidStatus = (request.resource.data.loanStatus == 'SETTLED' && request.resource.data.remainingBalancePaise == 0 && resource.data.remainingBalancePaise == txn.amountPaise) ||
+                          (request.resource.data.loanStatus == resource.data.loanStatus && request.resource.data.remainingBalancePaise > 0);
+
+      return isOnlyModifyingAllowedFields && immutableIdsPreserved && hasPaiseFields && isTxnValid && exactMath && isValidStatus;
+    }
+
+    function isValidCashTransactionCreate(dealershipId, transactionId) {
+      let loanId = request.resource.data.loanId;
+      let loanPath = /databases/$(database)/documents/dealerships/$(dealershipId)/loans/$(loanId);
+      let loanExistsAfter = existsAfter(loanPath);
+      let loanAfter = getAfter(loanPath).data;
+      let isAtomicallyPaired = loanExistsAfter && loanAfter.lastPaymentTransactionId == transactionId;
+      let deterministicId = 'TXN_CASH_' + request.resource.data.idempotencyKey;
+
+      return request.resource.data.dealershipId == dealershipId &&
+             request.resource.data.paymentMethod == 'CASH' &&
+             request.resource.data.status == 'SUCCESS' &&
+             request.resource.data.amountPaise is int &&
+             request.resource.data.amountPaise > 0 &&
+             request.resource.data.loanId is string && request.resource.data.loanId != '' &&
+             request.resource.data.customerId is string && request.resource.data.customerId != '' &&
+             request.resource.data.collectedByUserId == request.auth.uid &&
+             request.resource.data.idempotencyKey is string && request.resource.data.idempotencyKey != '' &&
+             transactionId == deterministicId &&
+             isAtomicallyPaired;
+    }
+
+    // User collection rules (/users/{userId})
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        isSuperAdmin() ||
+        (resource.data.dealershipId != null && resource.data.dealershipId != '' && isTenantUser(resource.data.dealershipId))
+      );
+
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (request.resource.data.dealershipId != null && isDealershipAdmin(request.resource.data.dealershipId) && request.resource.data.role != 'SUPER_ADMIN') ||
+        (request.auth.uid == userId && !(request.resource.data.role in ['SUPER_ADMIN', 'DEALERSHIP_ADMIN']))
+      );
+
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (resource.data.dealershipId != null && isDealershipAdmin(resource.data.dealershipId) &&
+         isFieldUnchanged('role') &&
+         isFieldUnchanged('dealershipId')) ||
+        (request.auth.uid == userId &&
+         isFieldUnchanged('role') &&
+         isFieldUnchanged('dealershipId') &&
+         isFieldUnchanged('active') &&
+         isFieldUnchanged('stateCode') &&
+         isFieldUnchanged('storeId'))
+      );
+
+      allow delete: if isSuperAdmin();
+    }
+
+    // Multi-tenant Dealership collection rules (/dealerships/{dealershipId})
+    match /dealerships/{dealershipId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (isDealershipAdmin(dealershipId) && request.resource.data.dealershipId == dealershipId)
+      );
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (isDealershipAdmin(dealershipId) && request.resource.data.dealershipId == dealershipId && isFieldUnchanged('subscriptionStatus'))
+      );
+      allow delete: if isSuperAdmin();
+
+      // Explicit subcollection definitions matching repositories
+      match /stores/{storeId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create, update: if isAuthenticated() && (
+          isSuperAdmin() ||
+          ((isDealershipAdmin(dealershipId) || isStaff(dealershipId)) && request.resource.data.dealershipId == dealershipId)
+        );
+        allow delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(dealershipId));
+
+        match /expenses/{expenseId} {
+          // SUPER_ADMIN, SALES_USER, STATE_MANAGER, ADMIN, CUSTOMER are explicitly excluded from financial expense documents
+          allow read: if isExpenseStoreAuthorized(dealershipId, storeId) &&
+                       getUserRole() in ['DEALERSHIP_ADMIN', 'STORE_MANAGER', 'FINANCE_USER'];
+
+          allow create: if isExpenseStoreAuthorized(dealershipId, storeId) &&
+                       getUserRole() in ['DEALERSHIP_ADMIN', 'STORE_MANAGER', 'FINANCE_USER'] &&
+                       request.resource.data.expenseId == expenseId &&
+                       request.resource.data.dealershipId == dealershipId &&
+                       request.resource.data.storeId == storeId &&
+                       request.resource.data.createdByUserId == request.auth.uid &&
+                       request.resource.data.amountPaise is int &&
+                       request.resource.data.amountPaise > 0 &&
+                       request.resource.data.approvalStatus == 'DRAFT' &&
+                       request.resource.data.paymentStatus == 'UNPAID' &&
+                       request.resource.data.category in ['STORE_RENT', 'ELECTRICITY_UTILITIES', 'EMPLOYEE_SALARIES', 'TRANSPORTATION', 'VEHICLE_MAINTENANCE', 'MARKETING', 'OFFICE_EXPENSES', 'MISCELLANEOUS'] &&
+                       request.resource.data.paymentMethod in ['STORE_CASHBOOK', 'BANK_TRANSFER', 'CHEQUE', 'CREDIT_CARD'] &&
+                       request.resource.data.createdAt is int &&
+                       request.resource.data.createdAt > 0 &&
+                       request.resource.data.expenseDate is int &&
+                       request.resource.data.expenseDate > 0 &&
+                       request.resource.data.expenseDate <= request.time.toMillis() + 86400000;
+
+          allow update: if isExpenseStoreAuthorized(dealershipId, storeId) &&
+                       getUserRole() in ['DEALERSHIP_ADMIN', 'STORE_MANAGER', 'FINANCE_USER'] &&
+                       isFieldUnchanged('expenseId') &&
+                       isFieldUnchanged('dealershipId') &&
+                       isFieldUnchanged('storeId') &&
+                       isFieldUnchanged('createdByUserId') &&
+                       isFieldUnchanged('createdAt') &&
+                       (
+                         // DRAFT -> SUBMITTED
+                         (
+                           resource.data.approvalStatus == 'DRAFT' &&
+                           request.resource.data.approvalStatus == 'SUBMITTED' &&
+                           request.resource.data.submittedByUserId == request.auth.uid &&
+                           request.resource.data.submittedByUserId != '' &&
+                           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvalStatus', 'submittedByUserId', 'updatedAt'])
+                         ) ||
+                         // DRAFT -> CANCELLED or SUBMITTED -> CANCELLED
+                         (
+                           resource.data.approvalStatus in ['DRAFT', 'SUBMITTED'] &&
+                           request.resource.data.approvalStatus == 'CANCELLED' &&
+                           (resource.data.createdByUserId == request.auth.uid || resource.data.submittedByUserId == request.auth.uid || isDealershipAdmin(dealershipId)) &&
+                           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvalStatus', 'updatedAt'])
+                         ) ||
+                         // SUBMITTED -> APPROVED (Requires approver != creator and approver != submitter)
+                         (
+                           resource.data.approvalStatus == 'SUBMITTED' &&
+                           request.resource.data.approvalStatus == 'APPROVED' &&
+                           getUserRole() in ['DEALERSHIP_ADMIN', 'FINANCE_USER'] &&
+                           request.auth.uid != resource.data.createdByUserId &&
+                           request.auth.uid != resource.data.submittedByUserId &&
+                           resource.data.createdByUserId != '' &&
+                           resource.data.submittedByUserId != '' &&
+                           request.resource.data.approvedByUserId == request.auth.uid &&
+                           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvalStatus', 'approvedByUserId', 'updatedAt'])
+                         ) ||
+                         // SUBMITTED -> REJECTED
+                         (
+                           resource.data.approvalStatus == 'SUBMITTED' &&
+                           request.resource.data.approvalStatus == 'REJECTED' &&
+                           getUserRole() in ['DEALERSHIP_ADMIN', 'FINANCE_USER'] &&
+                           request.resource.data.rejectionReason is string &&
+                           request.resource.data.rejectionReason.size() > 0 &&
+                           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvalStatus', 'rejectionReason', 'updatedAt'])
+                         ) ||
+                         // REJECTED -> DRAFT
+                         (
+                           resource.data.approvalStatus == 'REJECTED' &&
+                           request.resource.data.approvalStatus == 'DRAFT' &&
+                           (resource.data.createdByUserId == request.auth.uid || resource.data.submittedByUserId == request.auth.uid) &&
+                           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvalStatus', 'description', 'amountPaise', 'category', 'paymentMethod', 'receiptAttachmentUrl', 'updatedAt'])
+                         ) ||
+                         // UNPAID -> PAID (Only when approvalStatus == APPROVED)
+                         (
+                           resource.data.approvalStatus == 'APPROVED' &&
+                           resource.data.paymentStatus == 'UNPAID' &&
+                           request.resource.data.paymentStatus == 'PAID' &&
+                           isAuthorizedCashCollector(dealershipId) &&
+                           request.resource.data.paidByUserId == request.auth.uid &&
+                           request.resource.data.paidTimestamp is int &&
+                           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['paymentStatus', 'paidByUserId', 'paidTimestamp', 'updatedAt'])
+                         ) ||
+                         // PAID -> REVERSED (Only with non-empty reversalReason)
+                         (
+                           resource.data.paymentStatus == 'PAID' &&
+                           request.resource.data.paymentStatus == 'REVERSED' &&
+                           getUserRole() in ['DEALERSHIP_ADMIN', 'STORE_MANAGER', 'FINANCE_USER'] &&
+                           request.resource.data.reversalReason is string &&
+                           request.resource.data.reversalReason.size() > 0 &&
+                           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['paymentStatus', 'reversalReason', 'updatedAt'])
+                         )
+                       );
+
+          allow delete: if false; // Expenses are permanent financial history and cannot be deleted
+        }
+
+        match /bikes/{bikeId} {
+          allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+          allow create: if isAuthenticated() && (
+            isSuperAdmin() ||
+            (isStaff(dealershipId) && request.resource.data.dealershipId == dealershipId)
+          );
+          allow update: if isAuthenticated() && (
+            isSuperAdmin() ||
+            (isStaff(dealershipId) && request.resource.data.dealershipId == dealershipId)
+          );
+          allow delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(dealershipId) || isStaff(dealershipId));
+        }
+
+        match /vehicles/{vehicleId} {
+          allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+          allow create: if isAuthenticated() && (
+            isSuperAdmin() ||
+            (isStaff(dealershipId) && request.resource.data.dealershipId == dealershipId)
+          );
+          allow update: if isAuthenticated() && (
+            isSuperAdmin() ||
+            (isStaff(dealershipId) && request.resource.data.dealershipId == dealershipId)
+          );
+          allow delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(dealershipId) || isStaff(dealershipId));
+        }
+      }
+
+      match /bikes/{bikeId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (isStaff(dealershipId) && request.resource.data.dealershipId == dealershipId)
+        );
+        allow update: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (isStaff(dealershipId) && request.resource.data.dealershipId == dealershipId)
+        );
+        allow delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(dealershipId) || isStaff(dealershipId));
+      }
+
+      match /vehicles/{vehicleId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (isStaff(dealershipId) && request.resource.data.dealershipId == dealershipId)
+        );
+        allow update: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (isStaff(dealershipId) && request.resource.data.dealershipId == dealershipId)
+        );
+        allow delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(dealershipId) || isStaff(dealershipId));
+      }
+
+      match /customers/{customerId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create, update: if isAuthenticated() && (
+          isSuperAdmin() ||
+          ((isDealershipAdmin(dealershipId) || isStaff(dealershipId)) && request.resource.data.dealershipId == dealershipId)
+        );
+        allow delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(dealershipId));
+      }
+
+      match /loans/{loanId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create: if isAuthenticated() && (
+          isSuperAdmin() ||
+          ((isDealershipAdmin(dealershipId) || isStaff(dealershipId)) && request.resource.data.dealershipId == dealershipId)
+        );
+        allow update: if isSuperAdmin() ||
+                      (isStaff(dealershipId) && areFinancialFieldsProtected()) ||
+                      (isAuthorizedCashCollector(dealershipId) && isCashPaymentLoanUpdate(dealershipId, loanId));
+        allow delete: if isSuperAdmin();
+      }
+
+      match /transactions/{transactionId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create: if (isSuperAdmin() && request.resource.data.paymentMethod != 'CASH') ||
+                      (isAuthorizedCashCollector(dealershipId) && isValidCashTransactionCreate(dealershipId, transactionId)) ||
+                      (isStaff(dealershipId) && request.resource.data.status != 'SUCCESS'); // Protect digital SUCCESS
+        allow update, delete: if isSuperAdmin(); // Staff cannot mutate ledger
+      }
+
+      match /audit_logs/{logId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow update, delete: if isSuperAdmin(); // Append-only for staff
+      }
+
+      match /auditLogs/{logId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow update, delete: if isSuperAdmin();
+      }
+
+      match /support_tickets/{ticketId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow update, delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(resource.data.dealershipId));
+      }
+
+      match /supportTickets/{ticketId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow update, delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(resource.data.dealershipId));
+      }
+
+      match /notifications/{notificationId} {
+        allow read, write: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+      }
+
+      match /subscriptions/{subscriptionId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create, update: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (isDealershipAdmin(dealershipId) &&
+           isFieldUnchanged('paymentStatus') &&
+           isFieldUnchanged('subscriptionStatus') &&
+           isFieldUnchanged('status'))
+        );
+        allow delete: if isSuperAdmin();
+      }
+
+      match /users/{userId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(dealershipId));
+        allow create, update: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (isDealershipAdmin(dealershipId) &&
+           isFieldUnchanged('role') &&
+           isFieldUnchanged('dealershipId'))
+        );
+        allow delete: if isSuperAdmin();
+      }
+
+      // Recursive multi-tenant fallback subcollections under /dealerships/{dealershipId}/... (excluding explicit collections)
+      match /{document=**} { allow read, write: if false; }
+    }
+
+    // Top-level Subscriptions collection
+    match /subscriptions/{subscriptionId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(resource.data.dealershipId));
+      allow create, update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (isDealershipAdmin(request.resource.data.dealershipId) &&
+         request.resource.data.dealershipId == resource.data.dealershipId &&
+         isFieldUnchanged('paymentStatus') &&
+         isFieldUnchanged('subscriptionStatus') &&
+         isFieldUnchanged('status'))
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Top-level Support Tickets collection (snake_case and camelCase)
+    match /support_tickets/{ticketId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(resource.data.dealershipId));
+      allow create: if isAuthenticated() && request.resource.data.dealershipId == getUserDealership();
+      allow update, delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(resource.data.dealershipId));
+    }
+
+    match /supportTickets/{ticketId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(resource.data.dealershipId));
+      allow create: if isAuthenticated() && request.resource.data.dealershipId == getUserDealership();
+      allow update, delete: if isAuthenticated() && (isSuperAdmin() || isDealershipAdmin(resource.data.dealershipId));
+    }
+
+    // Top-level Audit Logs collection (snake_case and camelCase)
+    match /audit_logs/{logId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(resource.data.dealershipId));
+      allow create: if isAuthenticated() && (isSuperAdmin() || isTenantUser(request.resource.data.dealershipId));
+      allow update, delete: if isSuperAdmin();
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || isTenantUser(resource.data.dealershipId));
+      allow create: if isAuthenticated() && (isSuperAdmin() || isTenantUser(request.resource.data.dealershipId));
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Legacy top-level root collections - explicitly denied to enforce multi-tenant isolation under /dealerships/{dealershipId}/...
+    match /stores/{storeId} {
+      allow read, write: if false;
+      match /{document=**} { allow read, write: if false; }
+    }
+
+    match /customers/{customerId} {
+      allow read, write: if false;
+      match /{document=**} { allow read, write: if false; }
+    }
+
+    match /loans/{loanId} {
+      allow read, write: if false;
+      match /{document=**} { allow read, write: if false; }
+    }
+
+    match /transactions/{transactionId} {
+      allow read, write: if false;
+      match /{document=**} { allow read, write: if false; }
+    }
+
+    match /bikes/{bikeId} {
+      allow read, write: if false;
+      match /{document=**} { allow read, write: if false; }
+    }
+
+    match /vehicles/{vehicleId} {
+      allow read, write: if false;
+      match /{document=**} { allow read, write: if false; }
+    }
+  }
+}

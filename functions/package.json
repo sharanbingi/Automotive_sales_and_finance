@@ -1,0 +1,22 @@
+{
+  "name": "functions",
+  "description": "Firebase Cloud Functions for Razorpay Order Creation & Signature Verification",
+  "scripts": {
+    "lint": "eslint .",
+    "serve": "firebase serve --only functions",
+    "shell": "firebase functions:shell",
+    "start": "npm run shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
+  },
+  "engines": {
+    "node": "22"
+  },
+  "main": "index.js",
+  "dependencies": {
+    "firebase-admin": "^13.1.0",
+    "firebase-functions": "^6.3.0",
+    "razorpay": "^2.9.5"
+  },
+  "private": true
+}

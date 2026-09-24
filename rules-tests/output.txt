@@ -1,0 +1,80 @@
+
+> test
+> mocha test/firestore.rules.spec.js
+
+
+
+  Firestore Security Rules Tests
+    √ Test 1: User can read their own user profile document (637ms)
+    √ Test 2: User cannot read another user profile outside their dealership tenant context (226ms)
+    √ Test 3: Dealership admin can read user profiles in their dealership (112ms)
+    √ Test 4: Dealership admin can create staff user in their dealership but not super_admin (220ms)
+    √ Test 5: Dealership admin cannot update role or dealershipId of users (209ms)
+    √ Test 6: Customer user can update own profile except protected fields (123ms)
+    √ Test 7: Super admin can create, read, update, and delete any user profile (195ms)
+    √ Test 8: Tenant user can read their own dealership document (178ms)
+    √ Test 9: Tenant user cannot read or write another dealership document (225ms)
+    √ Test 10: Dealership admin can create and update their own dealership (168ms)
+    √ Test 11: Non-admin staff cannot delete a dealership (124ms)
+    √ Test 12: Staff can create and update bikes/vehicles in their dealership (101ms)
+    √ Test 13: Staff cannot create bikes/vehicles with mismatched dealershipId (cross-tenant write blocked) (70ms)
+    √ Test 14: Staff and Dealership Admin can delete bikes/vehicles in their dealership (96ms)
+    √ Test 15: Staff and Dealership Admin can create and update customers with matching dealershipId (135ms)
+    √ Test 16: Staff cannot create customers with mismatched dealershipId (66ms)
+    √ Test 17: Only Super Admin or Dealership Admin can delete customers (194ms)
+    √ Test 18: Staff can update general non-financial fields on a loan when financial fields are protected (185ms)
+    √ Test 19: Staff cannot update protected financial fields directly without cash payment flow or super admin (131ms)
+    √ Test 20: Missing paise fields result in DENY (154ms)
+    √ Test 21: Authorized Cash Collector can perform valid cash payment loan update with complete paise data (174ms)
+    √ Test 22: STORE_MANAGER can perform valid cash payment loan update with complete paise data (148ms)
+    √ Test 23: DEALERSHIP_ADMIN can perform valid cash payment loan update with complete paise data (140ms)
+    √ Test 24: Cash payment loan update fails if paid amount math mismatch (149ms)
+    √ Test 25: Cash payment loan update fails if remaining balance math mismatch (200ms)
+    √ Test 26: Authorized Cash Collector can create a valid CASH transaction with paise (131ms)
+    √ Test 27: Transaction create fails if amountPaise is missing (191ms)
+    √ Test 28: Staff can create a non-SUCCESS digital transaction (e.g. pending UPI/Razorpay initialization) (76ms)
+    √ Test 29: Staff cannot create a digital SUCCESS transaction directly without gateway validation (58ms)
+    √ Test 30: Staff and Dealership Admin cannot update an existing transaction (ledger immutability) (121ms)
+    √ Test 31: Staff and Dealership Admin cannot delete an existing transaction (111ms)
+    √ Test 32: Staff can read and create audit logs and support tickets for their dealership, but cannot update or delete audit logs (184ms)
+    √ Test 33: Existing loan missing remainingBalancePaise: DENY (156ms)
+    √ Test 34: Existing loan missing paidAmountPaise: DENY (142ms)
+    √ Test 35: Requested updated loan missing remainingBalancePaise: DENY (148ms)
+    √ Test 36: Requested updated loan missing paidAmountPaise: DENY (114ms)
+    √ Test 37: amountPaise = 0: DENY (95ms)
+    √ Test 38: amountPaise < 0: DENY (117ms)
+    √ Test 39: Exact full settlement: ALLOW (145ms)
+    √ Test 40: Full settlement off by one paise: DENY (126ms)
+    √ Test 41: Attempt to overpay beyond remaining paise: DENY (137ms)
+    √ Test 42: Roles attempting CASH collection (345ms)
+    √ Test 43: Cross-tenant CASH payment: DENY (109ms)
+    √ Test 44: Forged dealershipId, collectedByUserId, mismatched customer, mismatched loan (249ms)
+    √ Test 45: CASH transaction with non-SUCCESS state where SUCCESS is required: DENY (92ms)
+    √ Test 46: Loan update modifying an unrelated field in addition to payment fields: DENY (121ms)
+    √ Test 47: Matching transaction amount Double appears correct but amountPaise is missing: DENY (138ms)
+    √ Test 48: Legacy Double delta differs from paise delta but exact paise fields are correct: ALLOW (119ms)
+    √ Test 49: Cash audit log delete by dealership staff: DENY (75ms)
+    1) Test 50: Replay an existing CASH transaction -> DENY
+    2) Test 51: Mismatched deterministic ID -> DENY
+    √ Test 52: Fresh valid atomic cash -> ALLOW (111ms)
+
+
+  50 passing (18s)
+  2 failing
+
+  1) Firestore Security Rules Tests
+       Test 50: Replay an existing CASH transaction -> DENY:
+     Error: Expected request to fail, but it succeeded.
+      at C:\Users\shara\AndroidStudioProjects\Automotivesalesandfinance2\rules-tests\node_modules\@firebase\rules-unit-testing\dist\index.cjs.js:768:31
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Context.<anonymous> (test\firestore.rules.spec.js:850:5)
+
+  2) Firestore Security Rules Tests
+       Test 51: Mismatched deterministic ID -> DENY:
+     Error: Expected request to fail, but it succeeded.
+      at C:\Users\shara\AndroidStudioProjects\Automotivesalesandfinance2\rules-tests\node_modules\@firebase\rules-unit-testing\dist\index.cjs.js:768:31
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Context.<anonymous> (test\firestore.rules.spec.js:871:5)
+
+
+
